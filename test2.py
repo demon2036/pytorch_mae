@@ -100,7 +100,10 @@ class MaeTrainer(BaseTrainer):
         # summary(self.model, (1, 3, 32, 32), )
 
         if compile:
-            self.model = torch.compile(self.model, fullgraph=False, )  # mode='max-autotune'
+            import torch_xla.core.xla_model as xm
+            device = xm.xla_device()
+            self.model = torchvision.models.resnet18().to(device)
+            self.model = torch.compile(self.model, backend='torchxla_trace_once' )  # mode='max-autotune'
 
         lr_func = lambda epoch: min((epoch + 1) / (warmup_epoch + 1e-8),
                                     0.5 * (math.cos(epoch / total_epoch * math.pi) + 1))
@@ -120,6 +123,7 @@ class MaeTrainer(BaseTrainer):
 
         self.accelerator = Accelerator(mixed_precision='bf16', )
         print(self.accelerator.device,self.accelerator.mixed_precision)
+        self.model = torch.compile(self.model,fullgraph=True, backend='openxla')
 
         self.model, self.optim, \
             self.train_dataloader, \
@@ -162,6 +166,8 @@ class MaeTrainer(BaseTrainer):
                         # print(img.shape)
                         step_count += 1
                         img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
+
+
                         # predicted_img, mask = model.train_forward(img)
                         predicted_img, mask = self.model(img)
 

@@ -226,7 +226,7 @@ class BlockMoE(nn.Module):
             hidden_features=int(dim * mlp_ratio),
             act_layer=act_layer,
             drop=proj_drop,
-        ).cuda() for _ in range(num_experts)], dim=dim, num_experts=num_experts,
+        ) for _ in range(num_experts)], dim=dim, num_experts=num_experts,
                                        slots_per_expert=(seq_length // num_experts))
 
         # self.mlp = mlp_layer(
@@ -308,7 +308,24 @@ class PatchShuffle(torch.nn.Module):
 
     def forward(self, patches: torch.Tensor):
         T, B, C = patches.shape  # length, batch, dim
+
+        # B,N,D = patches.shape  # length, batch, dim
+
         remain_T = int(T * (1 - self.ratio))
+
+        noise = torch.rand(T, B, device=patches.device)
+        forward_indexes = torch.argsort(noise, dim=0)
+        backward_indexes = torch.argsort(forward_indexes, dim=0)
+
+        patches = take_indexes(patches, forward_indexes)[:remain_T]
+        # patches=torch.gather(patches,dim=1,index=ids_shuffle)
+
+        """
+        print(patches.shape, ids_shuffle.shape, ids_restore.shape)
+
+
+        while True:
+            pass
 
         indexes = [random_indexes(T) for _ in range(B)]
         forward_indexes = torch.as_tensor(np.stack([i[0] for i in indexes], axis=-1), dtype=torch.long).to(
@@ -318,6 +335,7 @@ class PatchShuffle(torch.nn.Module):
 
         patches = take_indexes(patches, forward_indexes)  # 随机打乱了数据的patch，这样所有的patch都被打乱了
         patches = patches[:remain_T]  # 得到未mask的pacth [T*0.25, B, C]
+        """
 
         return patches, forward_indexes, backward_indexes
 

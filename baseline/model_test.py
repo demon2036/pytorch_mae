@@ -29,7 +29,24 @@ class PatchShuffle(torch.nn.Module):
 
     def forward(self, patches: torch.Tensor):
         T, B, C = patches.shape  # length, batch, dim
+
+        # B,N,D = patches.shape  # length, batch, dim
+
         remain_T = int(T * (1 - self.ratio))
+
+        noise = torch.rand(T, B, device=patches.device)
+        forward_indexes = torch.argsort(noise, dim=0)
+        backward_indexes = torch.argsort(forward_indexes, dim=0)
+
+        patches = take_indexes(patches, forward_indexes)[:remain_T]
+        # patches=torch.gather(patches,dim=1,index=ids_shuffle)
+
+        """
+        print(patches.shape, ids_shuffle.shape, ids_restore.shape)
+        
+
+        while True:
+            pass
 
         indexes = [random_indexes(T) for _ in range(B)]
         forward_indexes = torch.as_tensor(np.stack([i[0] for i in indexes], axis=-1), dtype=torch.long).to(
@@ -39,8 +56,7 @@ class PatchShuffle(torch.nn.Module):
 
         patches = take_indexes(patches, forward_indexes)  # 随机打乱了数据的patch，这样所有的patch都被打乱了
         patches = patches[:remain_T]  # 得到未mask的pacth [T*0.25, B, C]
-
-        print(patches.shape,forward_indexes.shape,backward_indexes.shape)
+        """
 
         return patches, forward_indexes, backward_indexes
 
@@ -80,6 +96,10 @@ class MAE_Encoder(torch.nn.Module):
     def forward(self, img):
         patches = self.patchify(img)
         patches = rearrange(patches, 'b c h w -> (h w) b c')
+        # patches = rearrange(patches, 'b c h w -> b (h w) c')
+
+        # print(self.pos_embedding.shape,patches.shape)
+
         patches = patches + self.pos_embedding
 
         patches, forward_indexes, backward_indexes = self.shuffle(patches)
@@ -176,13 +196,11 @@ class ViT_Classifier(torch.nn.Module):
 
     def forward(self, img):
         patches = self.patchify(img)
-        # patches = rearrange(patches, 'b c h w -> (h w) b c')
-        patches = rearrange(patches, 'b c h w ->  b (h w) c')
+        patches = rearrange(patches, 'b c h w -> (h w) b c')
+
+        print(self.pos_embedding.shape)
 
         patches = patches + self.pos_embedding
-
-        patches = rearrange(patches, 'b n c -> n b c')
-
         patches = torch.cat([self.cls_token.expand(-1, patches.shape[1], -1), patches], dim=0)
         patches = rearrange(patches, 't b c -> b t c')
         features = self.layer_norm(self.transformer(patches))

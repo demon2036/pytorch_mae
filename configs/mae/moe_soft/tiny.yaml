@@ -11,4 +11,15 @@ loss: l2
 mixed_precision: 'fp16'
 save_model_path: save_model_path/mae/moe_soft
 save_model_name: moe_soft_tiny
-compile: true
+use_aux_dataset: false
+optimizer:
+  target: torch.optim.AdamW
+  configs:
+    blr: 1.0e-4
+    betas: [0.9, 0.999]
+    weight_decay: 0.05
+
+
+
+
+

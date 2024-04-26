@@ -73,14 +73,16 @@ class MaeTrainer(BaseTrainer):
                  compile=False,
                  save_every=500,
                  optimizer='torch.optim.AdamW',
+
                  # optimizer_configs=
 
                  ):
         super().__init__(seed, batch_size, max_device_batch_size, total_epoch, mixed_precision, use_aux_dataset,
                          unsup_fraction, aux_data_filename, save_every=save_every, transform=False)
+        self.accelerator = None
         self.compile = compile
         self.loss = loss
-        self.model = model_instant_function(model_target, mask_ratio).to(self.device)
+        self.model = model_instant_function(model_target, mask_ratio)
         # self.optim = torch.optim.AdamW(self.model.parameters(),
         #                                lr=base_learning_rate * batch_size / 256,
         #                                betas=(0.9, 0.999), weight_decay=weight_decay
@@ -88,7 +90,7 @@ class MaeTrainer(BaseTrainer):
 
         self.optim = instant_optimizer(optimizer, self.model.parameters(), batch_size)
 
-        summary(self.model, (1, 3, 32, 32), )
+        # summary(self.model, (1, 3, 32, 32), )
 
         if compile:
             self.model = torch.compile(self.model, fullgraph=False, )  # mode='max-autotune'
@@ -100,6 +102,19 @@ class MaeTrainer(BaseTrainer):
         self.lr_scheduler = torch.optim.lr_scheduler.CyclicLR(self.optim, base_lr=1e-5, max_lr=3e-4, step_size_up=10,
                                                               step_size_down=10, cycle_momentum=False)
 
+
+
+
+        self.save_model_path = save_model_path
+        self.save_model_name = save_model_name
+        self.pretrained_model_path = pretrained_model_path
+        self.epoch = 0
+
+        self.mask_ratio = mask_ratio
+
+    def train(self):
+        self.accelerator = Accelerator(mixed_precision='no')
+        print(self.accelerator.device,self.accelerator.mixed_precision)
         self.model, \
             self.optim, \
             self.train_dataloader, \
@@ -108,12 +123,9 @@ class MaeTrainer(BaseTrainer):
                                                            )
         self.lr_scheduler = self.accelerator.prepare(self.lr_scheduler)
 
-        self.save_model_path = save_model_path
-        self.save_model_name = save_model_name
-        self.pretrained_model_path = pretrained_model_path
-        self.epoch = 0
 
-    def train(self):
+
+
         best_val_acc = 0
         step_count = 0
         self.optim.zero_grad()
@@ -129,15 +141,16 @@ class MaeTrainer(BaseTrainer):
 
                     z_router_losses = []
                     with self.accelerator.autocast():
+                        print(img.shape)
                         step_count += 1
                         img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
                         # predicted_img, mask = model.train_forward(img)
                         predicted_img, mask = self.model(img)
 
                         if self.loss == 'l2':
-                            loss = torch.mean((predicted_img - img) ** 2 * mask) / args.mask_ratio
+                            loss = torch.mean((predicted_img - img) ** 2 * mask) / self.mask_ratio
                         else:
-                            loss = torch.mean(torch.abs(predicted_img - img) * mask) / args.mask_ratio
+                            loss = torch.mean(torch.abs(predicted_img - img) * mask) / self.mask_ratio
 
                         # for transformer in self.model.encoder.transformer:
                         #     if not transformer.skip:
@@ -223,6 +236,12 @@ class MaeTrainer(BaseTrainer):
         pass
 
 
+def test(trainer):
+    print('hi')
+
+    trainer.train()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, )  # default=42
@@ -234,7 +253,7 @@ if __name__ == "__main__":
     parser.add_argument('--total_epoch', type=int, )  # default 2000
     parser.add_argument('--warmup_epoch', type=int, )  # default=200
     parser.add_argument('--loss', type=str, )  # default='l2'
-    parser.add_argument('--yaml_path', type=str, default='configs/mae/test_baseline.yaml')
+    parser.add_argument('--yaml_path', type=str, default='configs/mae/baseline/tiny_test.yaml')
     parser.add_argument('--aux_data_filename', type=str, default='/home/jtitor/Downloads/1m.npz')
     parser.add_argument('--save_every', type=int, )
     parser.add_argument('--compile', action='store_true', default=None)
@@ -242,7 +261,17 @@ if __name__ == "__main__":
 
     yaml_data = get_config(args)
     trainer = MaeTrainer(**yaml_data)
-    trainer.train()
+
+    # trainer.train()
+
+    from accelerate import notebook_launcher, Accelerator
+
+    notebook_launcher(test,(trainer,) , num_processes=8)
+
+    pass
+
+    # trainer.train()
+
     # trainer.save()
 
 """

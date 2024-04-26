@@ -69,7 +69,7 @@ class MaeFinetuneTrainer(BaseTrainer):
         super().__init__(seed, batch_size, max_device_batch_size, total_epoch, mixed_precision,save_every=save_every)
 
         self.loss_fn = loss_fn
-        self.model = model_instant_function(model_target, pretrained_model_path).to(self.device)
+        self.model = model_instant_function(model_target, pretrained_model_path)
         self.optim = torch.optim.AdamW(self.model.parameters(),
                                        lr=base_learning_rate * batch_size / 256,
                                        betas=(0.9, 0.999), weight_decay=weight_decay
@@ -80,6 +80,8 @@ class MaeFinetuneTrainer(BaseTrainer):
 
         lr_func = lambda epoch: min((epoch + 1) / (warmup_epoch + 1e-8),
                                     0.5 * (math.cos(epoch / total_epoch * math.pi) + 1))
+
+        self.accelerator = Accelerator(mixed_precision=mixed_precision)
 
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optim, lr_lambda=lr_func, verbose=True)
 
@@ -202,7 +204,7 @@ if __name__ == "__main__":
     parser.add_argument('--warmup_epoch', type=int, )#default=5
     parser.add_argument('--pretrained_model_path', type=str, )
     parser.add_argument('--save_every', type=int, )
-    parser.add_argument('--yaml_path', type=str, default='configs/vit/mod_custom/small.yaml')
+    parser.add_argument('--yaml_path', type=str, default='configs/vit/baseline/tiny.yaml')
 
 
     args = parser.parse_args()

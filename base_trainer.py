@@ -31,6 +31,10 @@ class BaseTrainer:
         load_batch_size = min(max_device_batch_size, batch_size)
         self.total_epoch = total_epoch
 
+        self.batch_size=batch_size
+        self.load_batch_size=load_batch_size
+
+
         assert batch_size % load_batch_size == 0
         self.steps_per_update = batch_size // load_batch_size
 
@@ -50,9 +54,9 @@ class BaseTrainer:
                                                         transform=Compose(
                                                             [ToTensor(), ]))  # 0.5, 0.5
 
-            train_dataloader = DataLoader(train_dataset, load_batch_size, shuffle=True, num_workers=8,
-                                          prefetch_factor=2, drop_last=True, pin_memory=True, persistent_workers=True)
-            test_dataloader = DataLoader(test_dataset, load_batch_size, shuffle=False, num_workers=8, prefetch_factor=4)
+            train_dataloader = DataLoader(train_dataset, load_batch_size, shuffle=True, num_workers=6,
+                                           drop_last=True, pin_memory=True, persistent_workers=True)
+            test_dataloader = DataLoader(test_dataset, load_batch_size, shuffle=False, num_workers=1, )
 
         else:
             from datasets import load_data
@@ -74,9 +78,5 @@ class BaseTrainer:
 
         self.train_dataloader = train_dataloader
         self.val_dataloader = test_dataloader
-        self.accelerator = Accelerator(mixed_precision=mixed_precision)
-        self.save_every = save_every
 
-    @property
-    def device(self):
-        return 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.save_every = save_every
