@@ -40,7 +40,7 @@ class PatchShuffle(torch.nn.Module):
         patches = take_indexes(patches, forward_indexes)  # 随机打乱了数据的patch，这样所有的patch都被打乱了
         patches = patches[:remain_T]  # 得到未mask的pacth [T*0.25, B, C]
 
-        print(patches.shape,forward_indexes.shape,backward_indexes.shape)
+        # print(patches.shape,forward_indexes.shape,backward_indexes.shape)
 
         return patches, forward_indexes, backward_indexes
 

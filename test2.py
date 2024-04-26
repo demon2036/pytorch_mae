@@ -123,7 +123,7 @@ class MaeTrainer(BaseTrainer):
 
         self.accelerator = Accelerator(mixed_precision='bf16', )
         print(self.accelerator.device,self.accelerator.mixed_precision)
-        self.model = torch.compile(self.model,fullgraph=True, backend='openxla')
+        # self.model = torch.compile(self.model,fullgraph=True, backend='openxla')
 
         self.model, self.optim, \
             self.train_dataloader, \
@@ -284,7 +284,7 @@ def main():
     parser.add_argument('--total_epoch', type=int, )  # default 2000
     parser.add_argument('--warmup_epoch', type=int, )  # default=200
     parser.add_argument('--loss', type=str, )  # default='l2'
-    parser.add_argument('--yaml_path', type=str, default='configs/mae/moe_soft/tiny.yaml')
+    parser.add_argument('--yaml_path', type=str, default='configs/mae/baseline/tiny.yaml')#'configs/mae/moe_soft/tiny.yaml'
     parser.add_argument('--aux_data_filename', type=str, default='/home/jtitor/Downloads/1m.npz')
     parser.add_argument('--save_every', type=int, )
     parser.add_argument('--compile', action='store_true', default=None)

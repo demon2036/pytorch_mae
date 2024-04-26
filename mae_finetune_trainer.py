@@ -20,30 +20,35 @@ from autoaugment import CIFAR10Policy
 from torchinfo import summary
 
 
-def get_model_finetune(model: str = None, pretrained_model_path: str = None):
+def get_model_finetune(model: str = None, pretrained_model_path: str = None,is_mae=False):
     assert model is not None
+    print(model)
     mae_model = get_obj_from_str(model)()
 
-    if pretrained_model_path is not None:
+    if is_mae:
 
-        data=torch.load(pretrained_model_path)
-        # print(data)
+        if pretrained_model_path is not None:
 
-        # for key in data.keys():
-        #     print(key)
-        # while True:
-        #     pass
+            data=torch.load(pretrained_model_path)
+            # print(data)
 
-        # data= collections.OrderedDict([(k.replace('_orig_mod.',''), v)  for k, v in data.items()])
-        # print(type(data))
+            # for key in data.keys():
+            #     print(key)
+            # while True:
+            #     pass
+
+            # data= collections.OrderedDict([(k.replace('_orig_mod.',''), v)  for k, v in data.items()])
+            # print(type(data))
 
 
-        # while True:
-        #     pass
+            # while True:
+            #     pass
 
-        mae_model.load_state_dict(data)
+            mae_model.load_state_dict(data)
 
-    model = ViT_Classifier(mae_model.encoder, num_classes=10)
+        model = ViT_Classifier(mae_model.encoder, num_classes=10)
+    else:
+        model=mae_model
     return model
 
 
@@ -204,7 +209,7 @@ if __name__ == "__main__":
     parser.add_argument('--warmup_epoch', type=int, )#default=5
     parser.add_argument('--pretrained_model_path', type=str, )
     parser.add_argument('--save_every', type=int, )
-    parser.add_argument('--yaml_path', type=str, default='configs/vit/baseline/tiny.yaml')
+    parser.add_argument('--yaml_path', type=str, default='configs/vit/wideresnet/wideresnet_28_10.yaml')#'configs/vit/baseline/tiny.yaml'
 
 
     args = parser.parse_args()
