@@ -5,13 +5,28 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="8fef007b-7034-4ff0-9e33-4f788aecbb1c" name="Changes" comment="this is first commit">
-      <change afterPath="$PROJECT_DIR$/wideresnet/wideresnet.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/MAE-for-CIFAR-MoE-V2.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/MAE-for-CIFAR-MoE-V2.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/base_trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/base_trainer.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/baseline/model.py" beforeDir="false" afterPath="$PROJECT_DIR$/baseline/model.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/configs/mae/baseline/tiny.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/configs/mae/baseline/tiny.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/configs/mae/moe_soft/tiny.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/configs/mae/moe_soft/tiny.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/baseline/model_test.py" beforeDir="false" afterPath="$PROJECT_DIR$/baseline/model_test.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/configs/mae/baseline/tiny_adan.yaml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/configs/mae/baseline/tiny_lion.yaml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/configs/mae/baseline/tiny_test.yaml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/configs/mae/baseline/tiny_unsup09.yaml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/configs/mae/baseline/tiny_unsup09_epoch8000.yaml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/configs/vit/baseline/tiny.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/configs/vit/baseline/tiny.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/datasets/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/datasets/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/datasets/cifar10s.py" beforeDir="false" afterPath="$PROJECT_DIR$/datasets/cifar10s.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/datasets/semisup.py" beforeDir="false" afterPath="$PROJECT_DIR$/datasets/semisup.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/mae_finetune_trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/mae_finetune_trainer.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/test2.py" beforeDir="false" afterPath="$PROJECT_DIR$/test2.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/mae_trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/mae_trainer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/normal_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/normal_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/optimizers/lion.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test2.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/trades.py" beforeDir="false" afterPath="$PROJECT_DIR$/trades.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -37,30 +52,37 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "Python.base_trainer.executor": "Run",
-    "Python.mae_finetune_trainer.executor": "Run",
-    "Python.mae_trainer.executor": "Run",
-    "Python.test2.executor": "Run",
-    "RunOnceActivity.OpenProjectViewOnStart": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "git-widget-placeholder": "master",
-    "last_opened_file_path": "/home/jtitor/github/MAE-for-CIFAR-MoE-V2/configs/vit/wideresnet",
-    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;Python.base_trainer.executor&quot;: &quot;Run&quot;,
+    &quot;Python.mae_distill_trainer.executor&quot;: &quot;Run&quot;,
+    &quot;Python.mae_distill_trainer_fork_native.executor&quot;: &quot;Run&quot;,
+    &quot;Python.mae_distill_trainer_trade_move_buffer.executor&quot;: &quot;Run&quot;,
+    &quot;Python.mae_finetune_trainer.executor&quot;: &quot;Run&quot;,
+    &quot;Python.mae_trainer.executor&quot;: &quot;Run&quot;,
+    &quot;Python.mae_trainer_fork_adv_clip.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test2.executor&quot;: &quot;Run&quot;,
+    &quot;Python.utils.executor&quot;: &quot;Run&quot;,
+    &quot;Python.workspace.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/home/jtitor/github/GeoDiff&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
-      <recent name="$PROJECT_DIR$/configs/vit/wideresnet" />
+      <recent name="$PROJECT_DIR$/configs/mae" />
+      <recent name="$PROJECT_DIR$/mae_adv" />
       <recent name="$PROJECT_DIR$" />
-      <recent name="$PROJECT_DIR$/configs/mae/moe_soft" />
-      <recent name="$PROJECT_DIR$/configs/mae/baseline" />
+      <recent name="$PROJECT_DIR$/configs/vit/baseline" />
       <recent name="$PROJECT_DIR$/configs/vit" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.mae_finetune_trainer">
-    <configuration name="base_trainer" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+  <component name="RunManager" selected="Python.mae_trainer_fork_adv_clip">
+    <configuration name="mae_distill_trainer_fork_native" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="MAE-for-CIFAR-MoE-V2" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -73,29 +95,7 @@
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/base_trainer.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
-    <configuration name="mae_finetune_trainer" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="MAE-for-CIFAR-MoE-V2" />
-      <option name="ENV_FILES" value="" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/mae_finetune_trainer.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/mae_distill_trainer_fork_native.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -126,7 +126,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="test2" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="mae_trainer_fork_adv_clip" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="MAE-for-CIFAR-MoE-V2" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -139,7 +139,51 @@
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/test2.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/mae_trainer_fork_adv_clip.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="test" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="MAE-for-CIFAR-MoE-V2" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/test.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="workspace" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="MAE-for-CIFAR-MoE-V2" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/workspace.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -150,17 +194,18 @@
     </configuration>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.mae_finetune_trainer" />
-        <item itemvalue="Python.test2" />
-        <item itemvalue="Python.base_trainer" />
+        <item itemvalue="Python.mae_trainer_fork_adv_clip" />
+        <item itemvalue="Python.test" />
         <item itemvalue="Python.mae_trainer" />
+        <item itemvalue="Python.mae_distill_trainer_fork_native" />
+        <item itemvalue="Python.workspace" />
       </list>
     </recent_temporary>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-0509580d9d50-746f403e7f0c-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-241.14494.241" />
+        <option value="bundled-python-sdk-babbdf50b680-746f403e7f0c-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-241.15989.155" />
       </set>
     </attachedChunks>
   </component>
@@ -205,11 +250,41 @@
       <option name="project" value="LOCAL" />
       <updated>1714133997921</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="this is first commit">
+      <option name="closed" value="true" />
+      <created>1714139110361</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1714139110361</updated>
+    </task>
+    <task id="LOCAL-00006" summary="this is first commit">
+      <option name="closed" value="true" />
+      <created>1714139136909</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1714139136909</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="this is first commit" />
     <option name="LAST_COMMIT_MESSAGE" value="this is first commit" />
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/mae_distill_trainer.py</url>
+          <option name="timeStamp" value="1" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/mae_distill_trainer_fork.py</url>
+          <option name="timeStamp" value="2" />
+        </line-breakpoint>
+      </breakpoints>
+    </breakpoint-manager>
   </component>
 </project>

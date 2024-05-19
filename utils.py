@@ -1,11 +1,29 @@
 import importlib
 import random
+
+import timm.optim
 import torch
 import numpy as np
 import yaml
 import json
+import torch.nn as nn
 
 acc_fn = lambda logit, label: torch.mean((logit.argmax(dim=-1) == label).float())
+
+
+def features_kl_adv_loss(model,
+                         x_natural, x_adv, loss_start=0
+                         ):
+    criterion_kl = nn.KLDivLoss(reduction='batchmean')
+    feats = model.forward_feat(x_natural)[loss_start:]
+
+    losses = 0
+    feats_adv = model.forward_feat(x_adv)[loss_start:]
+    for feat, feat_adv in zip(feats, feats_adv):
+        loss = criterion_kl(torch.log_softmax(feat_adv, -1), torch.softmax(feat, -1))
+        losses += loss / len(feats_adv)
+
+    return losses, feats, feats_adv
 
 
 def setup_seed(seed=2022):
@@ -49,11 +67,10 @@ def get_config(args):
 
 
 def print_with_seperator(str_to_print, seperator='*', multi=None):
-
-    seperator_length= min(100,int(len(str_to_print)*2)) if multi is None else multi
+    seperator_length = min(100, int(len(str_to_print) * 2)) if multi is None else multi
 
     print()
-    print(f'{seperator}' *seperator_length)
-    print(' '*2+str_to_print)
+    print(f'{seperator}' * seperator_length)
+    print(' ' * 2 + str_to_print)
     print(f'{seperator}' * seperator_length)
     print()

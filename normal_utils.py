@@ -9,8 +9,8 @@ CIFAR10_STD = (0.2471, 0.2435, 0.2616)
 class Normalize(nn.Module):
     def __init__(self, mean, std, preprocess=True, ):
         super().__init__()
-        mean = np.array(mean)
-        std = np.array(std)
+        mean = np.array(mean,dtype=np.float32)
+        std = np.array(std,dtype=np.float32)
 
         self.mean = torch.from_numpy(mean)
         self.std = torch.from_numpy(std)
@@ -23,7 +23,7 @@ class Normalize(nn.Module):
             self.std = self.std.reshape(1, 3, 1, 1)
 
     def forward(self, x):
-        return (x - self.mean) / self.std
+        return (x - self.mean.to(x.device)) / self.std.to(x.device)
 
 
 class DeNormalize(nn.Module):

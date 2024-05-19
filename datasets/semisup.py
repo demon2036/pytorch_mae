@@ -86,9 +86,9 @@ class SemiSupervisedDataset(torch.utils.data.Dataset):
 
                     aux_data = aux_data[take_inds]
                     aux_targets = aux_targets[take_inds]
-
+                print(f'add_aux_labels:{add_aux_labels}')
                 self.data = np.concatenate((self.data, aux_data), axis=0)
-
+                # add_aux_labels=True
                 if not add_aux_labels:
                     self.targets.extend([-1] * len(aux_data))
                 else:

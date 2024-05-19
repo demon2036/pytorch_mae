@@ -1,3 +1,5 @@
+import copy
+
 import torch
 import timm
 import numpy as np
@@ -29,7 +31,24 @@ class PatchShuffle(torch.nn.Module):
 
     def forward(self, patches: torch.Tensor):
         T, B, C = patches.shape  # length, batch, dim
+
+        # B,N,D = patches.shape  # length, batch, dim
+
         remain_T = int(T * (1 - self.ratio))
+
+        noise = torch.rand(T, B, device=patches.device)
+        forward_indexes = torch.argsort(noise, dim=0)
+        backward_indexes = torch.argsort(forward_indexes, dim=0)
+
+        patches = take_indexes(patches, forward_indexes)[:remain_T]
+        # patches=torch.gather(patches,dim=1,index=ids_shuffle)
+
+        """
+        print(patches.shape, ids_shuffle.shape, ids_restore.shape)
+
+
+        while True:
+            pass
 
         indexes = [random_indexes(T) for _ in range(B)]
         forward_indexes = torch.as_tensor(np.stack([i[0] for i in indexes], axis=-1), dtype=torch.long).to(
@@ -39,8 +58,7 @@ class PatchShuffle(torch.nn.Module):
 
         patches = take_indexes(patches, forward_indexes)  # 随机打乱了数据的patch，这样所有的patch都被打乱了
         patches = patches[:remain_T]  # 得到未mask的pacth [T*0.25, B, C]
-
-        # print(patches.shape,forward_indexes.shape,backward_indexes.shape)
+        """
 
         return patches, forward_indexes, backward_indexes
 
@@ -168,28 +186,53 @@ class ViT_Classifier(torch.nn.Module):
     def __init__(self, encoder: MAE_Encoder, num_classes=10) -> None:
         super().__init__()
         self.cls_token = encoder.cls_token
+        self.distill_token = copy.deepcopy(encoder.cls_token)
         self.pos_embedding = encoder.pos_embedding
         self.patchify = encoder.patchify
         self.transformer = encoder.transformer
         self.layer_norm = encoder.layer_norm
         self.head = torch.nn.Linear(self.pos_embedding.shape[-1], num_classes)
 
+    # def forward(self, img):
+    #     patches = self.patchify(img)
+    #     # patches = rearrange(patches, 'b c h w -> (h w) b c')
+    #     patches = rearrange(patches, 'b c h w ->  b (h w) c')
+    #
+    #     patches = patches + self.pos_embedding
+    #
+    #     patches = rearrange(patches, 'b n c -> n b c')
+    #
+    #     patches = torch.cat([self.cls_token.expand(-1, patches.shape[1], -1), patches], dim=0)
+    #     patches = rearrange(patches, 't b c -> b t c')
+    #     features = self.layer_norm(self.transformer(patches))
+    #     features = rearrange(features, 'b t c -> t b c')
+    #     logits = self.head(features[0])
+    #     return logits
+
+
+
     def forward(self, img):
         patches = self.patchify(img)
-        # patches = rearrange(patches, 'b c h w -> (h w) b c')
-        patches = rearrange(patches, 'b c h w ->  b (h w) c')
-
+        patches = rearrange(patches, 'b c h w -> (h w) b c')
+        # patches = rearrange(patches, 'b c h w ->  b (h w) c')
         patches = patches + self.pos_embedding
-
-        patches = rearrange(patches, 'b n c -> n b c')
-
-        patches = torch.cat([self.cls_token.expand(-1, patches.shape[1], -1), patches], dim=0)
+        # patches = rearrange(patches, 'b n c -> n b c')
+        patches = torch.cat([self.cls_token.expand(-1, patches.shape[1], -1),self.distill_token.expand(-1, patches.shape[1], -1), patches], dim=0)
         patches = rearrange(patches, 't b c -> b t c')
         features = self.layer_norm(self.transformer(patches))
         features = rearrange(features, 'b t c -> t b c')
+
         logits = self.head(features[0])
         return logits
+        # logits_distill = self.head(features[1])
+        # if self.training:
+        #
+        #     return logits,logits_distill
+        # else:
+        #     return logits#,(logits_distill+logits)/2
 
+
+MAE_ViT_2_baby = partial(MAE_ViT, emb_dim=192, encoder_head=3, decoder_head=3, encoder_layer=1)
 
 MAE_ViT_2_T = partial(MAE_ViT, emb_dim=192, encoder_head=3, decoder_head=3, decoder_layer=2)
 MAE_ViT_2_S = partial(MAE_ViT, emb_dim=384, encoder_head=6, decoder_head=6, decoder_layer=2)

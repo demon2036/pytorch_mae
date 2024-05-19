@@ -1,20 +1,25 @@
 import copy
+from typing import Optional
 
+import einops
 import torch
 import timm
 import numpy as np
 
 from einops import repeat, rearrange
 from einops.layers.torch import Rearrange
+from timm.layers import DropPath, Mlp
 
 # 这里可以用两个timm模型进行构建我们的结果
 from timm.models.layers import trunc_normal_
-from timm.models.vision_transformer import Block
+from timm.models.vision_transformer import Block, LayerScale, Attention
 from functools import partial
 import torch.nn as nn
-from torchvision.transforms import Normalize
+import torch.nn.functional as F
 
-from normal_utils import CIFAR10_MEAN, CIFAR10_STD
+from baseline.efficient_kan import KANLinear, WrapperKan
+from baseline.lr import LearnableAct
+from normal_utils import Normalize, CIFAR10_MEAN, CIFAR10_STD
 
 
 def random_indexes(size: int):
@@ -35,7 +40,24 @@ class PatchShuffle(torch.nn.Module):
 
     def forward(self, patches: torch.Tensor):
         T, B, C = patches.shape  # length, batch, dim
+
+        # B,N,D = patches.shape  # length, batch, dim
+
         remain_T = int(T * (1 - self.ratio))
+
+        noise = torch.rand(T, B, device=patches.device)
+        forward_indexes = torch.argsort(noise, dim=0)
+        backward_indexes = torch.argsort(forward_indexes, dim=0)
+
+        patches = take_indexes(patches, forward_indexes)[:remain_T]
+        # patches=torch.gather(patches,dim=1,index=ids_shuffle)
+
+        """
+        print(patches.shape, ids_shuffle.shape, ids_restore.shape)
+
+
+        while True:
+            pass
 
         indexes = [random_indexes(T) for _ in range(B)]
         forward_indexes = torch.as_tensor(np.stack([i[0] for i in indexes], axis=-1), dtype=torch.long).to(
@@ -45,10 +67,120 @@ class PatchShuffle(torch.nn.Module):
 
         patches = take_indexes(patches, forward_indexes)  # 随机打乱了数据的patch，这样所有的patch都被打乱了
         patches = patches[:remain_T]  # 得到未mask的pacth [T*0.25, B, C]
-
-        # print(patches.shape,forward_indexes.shape,backward_indexes.shape)
+        """
 
         return patches, forward_indexes, backward_indexes
+
+
+class NaiveFourierKANLayer(nn.Module):
+    def __init__(self, inputdim, outdim, gridsize=3, addbias=True):
+        super(NaiveFourierKANLayer, self).__init__()
+        self.gridsize = gridsize
+        self.addbias = addbias
+        self.inputdim = inputdim
+        self.outdim = outdim
+
+        # The normalization has been chosen so that if given inputs where each coordinate is of unit variance,
+        # then each coordinates of the output is of unit variance
+        # independently of the various sizes
+        self.fouriercoeffs = torch.nn.Parameter(torch.randn(2, outdim, inputdim, gridsize) /
+                                                (np.sqrt(inputdim) * np.sqrt(self.gridsize)))
+        if addbias:
+            self.bias = torch.nn.Parameter(torch.zeros(1, outdim))
+
+    # x.shape ( ... , indim )
+    # out.shape ( ..., outdim)
+    def forward(self, x):
+        xshp = x.shape
+
+        # print(xshp)
+        outshape = xshp[0:-1] + (self.outdim,)
+        x = torch.reshape(x, (-1, self.inputdim))
+        # Starting at 1 because constant terms are in the bias
+        k = torch.reshape(torch.arange(1, self.gridsize + 1, device=x.device), (1, 1, 1, self.gridsize))
+        xrshp = torch.reshape(x, (x.shape[0], 1, x.shape[1], 1))
+        # This should be fused to avoid materializing memory
+        c = torch.cos(k * xrshp)
+        s = torch.sin(k * xrshp)
+        # We compute the interpolation of the various functions defined by their fourier coefficient for each input coordinates and we sum them
+        # y = th.sum(c * self.fouriercoeffs[0:1], (-2, -1))
+        # y += th.sum(s * self.fouriercoeffs[1:2], (-2, -1))
+        # if self.addbias:
+        #     y += self.bias
+        # End fuse
+        ''''''
+        #You can use einsum instead to reduce memory usage
+        #It stills not as good as fully fused but it should help
+        #einsum is usually slower though
+        c = torch.reshape(c, (1, x.shape[0], x.shape[1], self.gridsize))
+        s = torch.reshape(s, (1, x.shape[0], x.shape[1], self.gridsize))
+        y2 = torch.einsum("dbik,djik->bj", torch.concat([c, s], axis=0), self.fouriercoeffs)
+        if self.addbias:
+            y2 += self.bias
+
+        # diff = th.sum((y2-y)**2)
+        # print("diff")
+        # print(diff) #should be ~0
+
+        y = torch.reshape(y2, outshape)
+        return y
+
+
+class Block(nn.Module):
+    def __init__(
+            self,
+            dim: int,
+            num_heads: int,
+            mlp_ratio: float = 4.,
+            qkv_bias: bool = False,
+            qk_norm: bool = False,
+            proj_drop: float = 0.,
+            attn_drop: float = 0.,
+            init_values: Optional[float] = None,
+            drop_path: float = 0.,
+            act_layer: nn.Module = nn.GELU,
+            norm_layer: nn.Module = nn.LayerNorm,
+            mlp_layer: nn.Module = Mlp,
+    ) -> None:
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = Attention(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            qk_norm=qk_norm,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            norm_layer=norm_layer,
+        )
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+        self.norm2 = norm_layer(dim)
+
+        self.mlp = mlp_layer(
+            in_features=dim,
+            hidden_features=int(dim * mlp_ratio),
+            act_layer=act_layer,
+            drop=proj_drop,
+        )
+
+        # self.mlp = nn.Sequential(NaiveFourierKANLayer(dim, dim,gridsize=3),nn.GELU(),nn.Linear(dim,dim))
+        self.mlp = WrapperKan(dim)
+        # self.mlp = nn.Sequential(Wrapper(dim), Wrapper(dim))
+        # self.mlp=nn.Identity()
+        # self.mlp = nn.Sequential(NaiveFourierKANLayer(dim, dim, gridsize=1), nn.GELU(), nn.Linear(dim, dim))
+        latent_dim = int(4 * dim)
+        # self.mlp = nn.Sequential(nn.Linear(dim, latent_dim), LearnableAct(latent_dim, gridsize=3),
+        #                          nn.Linear(latent_dim, dim))
+
+        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
+        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        return x
 
 
 class MAE_Encoder(torch.nn.Module):
@@ -71,7 +203,7 @@ class MAE_Encoder(torch.nn.Module):
         # 这里得到一个 (3, dim, patch, patch)
         self.patchify = torch.nn.Conv2d(3, emb_dim, patch_size, patch_size)
 
-        self.transformer = torch.nn.ModuleList([Block(emb_dim, num_head) for _ in range(num_layer)])
+        self.transformer = torch.nn.Sequential(*[Block(emb_dim, num_head) for _ in range(num_layer)])
 
         # ViT的laynorm
         self.layer_norm = torch.nn.LayerNorm(emb_dim)
@@ -92,11 +224,7 @@ class MAE_Encoder(torch.nn.Module):
 
         patches = torch.cat([self.cls_token.expand(-1, patches.shape[1], -1), patches], dim=0)
         patches = rearrange(patches, 't b c -> b t c')
-
-        for transformer in self.transformer:
-            patches = transformer(patches)
-
-        features = self.layer_norm(patches)
+        features = self.layer_norm(self.transformer(patches))
         features = rearrange(features, 'b t c -> t b c')
 
         return features, backward_indexes
@@ -175,7 +303,7 @@ class MAE_ViT(torch.nn.Module):
 
 
 class ViT_Classifier(torch.nn.Module):
-    def __init__(self, encoder: MAE_Encoder, num_classes=10, ) -> None:
+    def __init__(self, encoder: MAE_Encoder, num_classes=10) -> None:
         super().__init__()
         self.cls_token = encoder.cls_token
         self.distill_token = copy.deepcopy(encoder.cls_token)
@@ -185,42 +313,24 @@ class ViT_Classifier(torch.nn.Module):
         self.layer_norm = encoder.layer_norm
         self.head = torch.nn.Linear(self.pos_embedding.shape[-1], num_classes)
 
-        self.head_dist = nn.Linear(self.pos_embedding.shape[-1], num_classes)
-
-        trunc_normal_(self.distill_token, std=.02)
+    # def forward(self, img):
+    #     patches = self.patchify(img)
+    #     # patches = rearrange(patches, 'b c h w -> (h w) b c')
+    #     patches = rearrange(patches, 'b c h w ->  b (h w) c')
+    #
+    #     patches = patches + self.pos_embedding
+    #
+    #     patches = rearrange(patches, 'b n c -> n b c')
+    #
+    #     patches = torch.cat([self.cls_token.expand(-1, patches.shape[1], -1), patches], dim=0)
+    #     patches = rearrange(patches, 't b c -> b t c')
+    #     features = self.layer_norm(self.transformer(patches))
+    #     features = rearrange(features, 'b t c -> t b c')
+    #     logits = self.head(features[0])
+    #     return logits
 
     def forward(self, img):
-        # img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
-        #
-        # patches = self.patchify(img)
-        # patches = rearrange(patches, 'b c h w -> (h w) b c')
-        # # patches = rearrange(patches, 'b c h w ->  b (h w) c')
-        # patches = patches + self.pos_embedding
-        # # patches = rearrange(patches, 'b n c -> n b c')
-        # patches = torch.cat(
-        #     [self.cls_token.expand(-1, patches.shape[1], -1), self.distill_token.expand(-1, patches.shape[1], -1),
-        #      patches], dim=0)
-        # patches = rearrange(patches, 't b c -> b t c')
-        # features = self.layer_norm(self.transformer(patches))
-        # features = rearrange(features, 'b t c -> t b c')
-
-        features = self.forward_features(img)
-
-        logits = self.head(features[:, 0])
-        return logits
-        # logits_distill = self.head(features[1])
-        # if self.training:
-        #
-        #     return logits,logits_distill
-        # else:
-        #     return logits#,(logits_distill+logits)/2
-
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {'pos_embedding', 'cls_token', 'distill_token'}
-
-    def forward_features(self, img):
-        img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
+        img = Normalize(CIFAR10_MEAN, CIFAR10_STD, preprocess=False)(img)
         patches = self.patchify(img)
         patches = rearrange(patches, 'b c h w -> (h w) b c')
         # patches = rearrange(patches, 'b c h w ->  b (h w) c')
@@ -230,19 +340,11 @@ class ViT_Classifier(torch.nn.Module):
             [self.cls_token.expand(-1, patches.shape[1], -1), self.distill_token.expand(-1, patches.shape[1], -1),
              patches], dim=0)
         patches = rearrange(patches, 't b c -> b t c')
+        features = self.layer_norm(self.transformer(patches))
+        features = rearrange(features, 'b t c -> t b c')
 
-        for transformer in self.transformer:
-            patches = transformer(patches)
-        features = self.layer_norm(patches)
-        return features
-
-    def forward_train(self, img):
-        features = self.forward_features(img)
-        logits = self.head(features[:, 0])
-
-        logits_distill = self.head_dist(features[:, 1])
-
-        return logits, logits_distill
+        logits = self.head(features[0])
+        return logits
         # logits_distill = self.head(features[1])
         # if self.training:
         #
@@ -250,6 +352,8 @@ class ViT_Classifier(torch.nn.Module):
         # else:
         #     return logits#,(logits_distill+logits)/2
 
+
+MAE_ViT_2_baby = partial(MAE_ViT, emb_dim=192, encoder_head=3, decoder_head=3, encoder_layer=1)
 
 MAE_ViT_2_T = partial(MAE_ViT, emb_dim=192, encoder_head=3, decoder_head=3, decoder_layer=2)
 MAE_ViT_2_S = partial(MAE_ViT, emb_dim=384, encoder_head=6, decoder_head=6, decoder_layer=2)

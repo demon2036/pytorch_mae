@@ -52,6 +52,7 @@ def load_data(data_dir, batch_size=256, batch_size_test=256, num_workers=4, use_
         unsup_fraction (float): fraction of unlabelled data per batch.
         validation (bool): if True, also returns a validation dataloader for unspervised cifar10 (as in Gowal et al, 2020).
     """
+    pin_memory = True
     dataset = os.path.basename(os.path.normpath(data_dir))
     load_dataset_fn = _LOAD_DATASET_FN[dataset]
     
@@ -61,6 +62,14 @@ def load_data(data_dir, batch_size=256, batch_size_test=256, num_workers=4, use_
                                                                    aux_data_filename=aux_data_filename, validation=True)
     else:
         train_dataset, test_dataset = load_dataset_fn(data_dir=data_dir, use_augmentation=use_augmentation,aux_data_filename=aux_data_filename,)
+
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle_train,
+                                  num_workers=num_workers, pin_memory=pin_memory, persistent_workers=True)
+    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size_test, shuffle=False,
+                                                  num_workers=num_workers, pin_memory=pin_memory,
+                                                  persistent_workers=True)
+
+    # return train_dataset, test_dataset, train_dataloader, test_dataloader
 
     # while True:
     #     pass
@@ -75,7 +84,7 @@ def load_data(data_dir, batch_size=256, batch_size_test=256, num_workers=4, use_
             )
     else:
         #pin_memory = torch.cuda.is_available()
-        pin_memory = True
+
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle_train,
                                                        num_workers=num_workers, pin_memory=pin_memory,persistent_workers=True)
         test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size_test, shuffle=False, 

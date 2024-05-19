@@ -1,3 +1,5 @@
+import copy
+
 from accelerate import Accelerator
 from torchvision import transforms
 from torchvision.transforms import Compose, ToTensor, Normalize
@@ -66,7 +68,7 @@ class BaseTrainer:
                                                                                        batch_size=load_batch_size,
                                                                                        batch_size_test=load_batch_size,
                                                                                        num_workers=8,
-                                                                                       use_augmentation='base',
+                                                                                       use_augmentation='base',# 'base' for mae 8000
                                                                                        use_consistency=False,
                                                                                        shuffle_train=True,
                                                                                        aux_data_filename=aux_data_filename,
@@ -77,6 +79,13 @@ class BaseTrainer:
         self.val_dataset = test_dataset
 
         self.train_dataloader = train_dataloader
+
+
+
         self.val_dataloader = test_dataloader
 
         self.save_every = save_every
+
+
+if __name__=="__main__":
+    pass

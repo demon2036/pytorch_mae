@@ -13,12 +13,15 @@ from torchvision.transforms import ToTensor, Compose, Normalize
 from tqdm import tqdm
 
 from base_trainer import BaseTrainer
-from mae_adv.model import ViT_Classifier
+from mae_adv.model import *
 from normal_utils import CIFAR10_MEAN, CIFAR10_STD
 from utils import setup_seed, get_obj_from_str, acc_fn, get_config
 from accelerate import Accelerator
 from autoaugment import CIFAR10Policy
 from torchinfo import summary
+
+
+from torch.utils.data import DataLoader
 
 
 def get_model_finetune(model: str = None, pretrained_model_path: str = None, is_mae=True):
@@ -51,6 +54,23 @@ def get_model_finetune(model: str = None, pretrained_model_path: str = None, is_
     return model
 
 
+def fgsm_attack(model, image, label, criterion, epsilon=8 / 255):
+    # 原始图像的预测结果
+    # 计算损失函数关于输入图像的梯度
+
+    image.requires_grad = True
+    output = model(image)
+    loss = criterion(output, label)
+    model.zero_grad()
+    loss.backward()
+    gradient = image.grad.data
+
+    # FGSM 攻击
+    perturbed_image = image + epsilon * torch.sign(gradient)
+    perturbed_image = torch.clamp(perturbed_image, 0, 1)  # 将图像像素值限制在 [0, 1] 范围内
+    return perturbed_image
+
+
 class MaeFinetuneTrainer(BaseTrainer):
     def __init__(self,
                  seed=2022,
@@ -68,9 +88,9 @@ class MaeFinetuneTrainer(BaseTrainer):
                  save_model_name: str = None,
                  mixed_precision='fp16',
                  save_every=500,
-                 compile=True,
+                 compile=False,
                  ):
-        super().__init__(seed, batch_size, max_device_batch_size, total_epoch, mixed_precision, save_every=save_every)
+        super().__init__(seed, batch_size, max_device_batch_size, total_epoch, mixed_precision, save_every=save_every,transform=False)
 
         self.loss_fn = loss_fn
         self.model = model_instant_function(model_target, pretrained_model_path)
@@ -85,14 +105,14 @@ class MaeFinetuneTrainer(BaseTrainer):
         # }
         # self.optim = torch.optim.AdamW([
         #     {'params': self.model.head.parameters(), **configs},
-        #     {'params': self.model.layer_norm.parameters(), **configs},
+        #     # {'params': self.model.transformer[:8].parameters(), **configs},
         #
         # ],
         # )
 
-        # summary(self.model, (1, 3, 32, 32), )
+        summary(self.model, (1, 3, 32, 32), )
         if compile:
-            self.model = torch.compile(self.model, fullgraph=False, )  # mode='max-autotune'
+            self.model = torch.compile(self.model, fullgraph=True, dynamic=True)  # mode='max-autotune'
 
         lr_func = lambda epoch: min((epoch + 1) / (warmup_epoch + 1e-8),
                                     0.5 * (math.cos(epoch / total_epoch * math.pi) + 1))
@@ -100,6 +120,8 @@ class MaeFinetuneTrainer(BaseTrainer):
         self.accelerator = Accelerator(mixed_precision=mixed_precision)
 
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optim, lr_lambda=lr_func, verbose=True)
+        # self.lr_scheduler = torch.optim.lr_scheduler.CyclicLR(self.optim, base_lr=1e-3, max_lr=3e-2, step_size_up=10,
+        #                                                       step_size_down=10, cycle_momentum=False)
 
         self.model, \
             self.optim, \
@@ -117,7 +139,10 @@ class MaeFinetuneTrainer(BaseTrainer):
         best_val_acc = 0
         step_count = 0
         self.optim.zero_grad()
+        adversary = AutoAttack(self.model, norm='Linf', eps=8 / 255, version='custom', verbose=True,
+                               attacks_to_run=['apgd-ce', 'apgd-dlr'])
         for e in range(self.total_epoch):
+
             self.model.train()
             losses = []
             acces = []
@@ -125,11 +150,13 @@ class MaeFinetuneTrainer(BaseTrainer):
             with tqdm(total=train_step, desc=f'Train Epoch {e + 1}/{self.total_epoch}', postfix=dict,
                       mininterval=0.3) as pbar:
                 for img, label in iter(self.train_dataloader):
-                    z_router_losses = []
                     with self.accelerator.autocast():
                         step_count += 1
                         # img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
-                        logits = self.model(img)
+                        # adv_img = fgsm_attack(self.model, img, label, self.loss_fn)
+                        adv_img = adversary.run_standard_evaluation(img, label)
+
+                        logits = self.model(adv_img)
 
                         # print(logits)
 
@@ -176,41 +203,46 @@ class MaeFinetuneTrainer(BaseTrainer):
         adversary = AutoAttack(self.model, norm='Linf', eps=8 / 255, version='custom', verbose=True,
                                attacks_to_run=['apgd-ce', 'apgd-dlr'])
 
+        # with torch.no_grad():
+        losses = []
+        acces = []
+        val_step = len(self.val_dataloader)
         with torch.no_grad():
-            losses = []
-            acces = []
-            val_step = len(self.val_dataloader)
-            with tqdm(total=val_step, desc=f'Val Epoch {epoch + 1}/{self.total_epoch}', postfix=dict,
-                      mininterval=0.3) as pbar2:
-                for img, label in iter(self.val_dataloader):
-                    # adv_img = adversary.run_standard_evaluation(img, label)
-                    # logits, feats = self.model(img, return_feats=True)
-                    # logits_adv, feats_adv = self.model(adv_img, return_feats=True)
-                    #
-                    # import torch.nn.functional as F
-                    # for i, (feat, feta_adv) in enumerate(zip(feats, feats_adv)):
-                    #     js_div = 0.5 * F.kl_div(torch.log_softmax(feta_adv, -1), torch.softmax(feat, -1))
-                    #     js_div += 0.5 * F.kl_div(torch.log_softmax(feat, -1), torch.softmax(feta_adv, -1))
-                    #
-                    #     print(js_div)
-                    #
-                    # print(F.softmax(logits, -1))
-                    # print(F.softmax(logits_adv, -1))
-                    logits = self.model(img)
+            with self.accelerator.autocast():
+                with tqdm(total=val_step, desc=f'Val Epoch {epoch + 1}/{self.total_epoch}', postfix=dict,
+                          mininterval=0.3) as pbar2:
+                    for img, label in iter(self.val_dataloader):
+                        adv_img = adversary.run_standard_evaluation(img, label)
+                        # adv_img = fgsm_attack(self.model, img, label, self.loss_fn)
+                        # adv_img=img
+                        logits, feats = self.model(img, return_feats=True)
+                        logits_adv, feats_adv = self.model(adv_img, return_feats=True)
 
-                    loss = self.loss_fn(logits, label)
-                    acc = acc_fn(logits, label)
-                    losses.append(loss.item())
-                    acces.append(acc.item())
+                        import torch.nn.functional as F
+                        for i, (feat, feta_adv) in enumerate(zip(feats, feats_adv)):
+                            js_div = 0.5 * F.kl_div(torch.log_softmax(feta_adv, -1), torch.softmax(feat, -1))
+                            js_div += 0.5 * F.kl_div(torch.log_softmax(feat, -1), torch.softmax(feta_adv, -1))
+                            # js_div =  F.kl_div(torch.log_softmax(feat, -1), torch.softmax(feta_adv, -1))
+                            # js_div = F.l1_loss(feat, feta_adv)
 
-                    pbar2.set_postfix(**{'Val Loss': np.mean(losses),
-                                         'Val accs': np.mean(acces)})
-                    pbar2.update(1)
-                    # break
-            avg_val_loss = sum(losses) / len(losses)
-            avg_val_acc = sum(acces) / len(acces)
-            print(
-                f'In epoch {epoch}, average validation loss is {avg_val_loss}, average validation acc is {avg_val_acc}.')
+                            print(js_div, feat.max(), feta_adv.max())
+
+                        print(F.softmax(logits, -1))
+                        print(F.softmax(logits_adv, -1))
+
+                        loss = self.loss_fn(logits_adv, label)
+                        acc = acc_fn(logits_adv, label)
+                        losses.append(loss.item())
+                        acces.append(acc.item())
+
+                        pbar2.set_postfix(**{'Val Loss': np.mean(losses),
+                                             'Val accs': np.mean(acces)})
+                        pbar2.update(1)
+                        break
+        avg_val_loss = sum(losses) / len(losses)
+        avg_val_acc = sum(acces) / len(acces)
+        print(
+            f'In epoch {epoch}, average validation loss is {avg_val_loss}, average validation acc is {avg_val_acc}.')
         return avg_val_acc
 
     def save(self):
@@ -247,7 +279,7 @@ if __name__ == "__main__":
     trainer = MaeFinetuneTrainer(**yaml_data, )
     # trainer.load('save_model_path/vit/baseline_aux/baseline_aux09_tiny.pt')
     trainer.train()
-
+    trainer.eval(1)
     # trainer.load('save_model_path/vit/baseline_aux/baseline_aux09_tiny.pt')
     # trainer.eval(0)
 

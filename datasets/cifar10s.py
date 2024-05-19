@@ -5,7 +5,9 @@ import torchvision.transforms as transforms
 
 import re
 import numpy as np
+from torchvision.transforms import ToTensor, Compose
 
+from autoaugment import CIFAR10Policy
 from .semisup import SemiSupervisedDataset
 from .semisup import SemiSupervisedSampler
 
@@ -63,6 +65,7 @@ def load_cifar10s(data_dir, use_augmentation='base', use_consistency=False, aux_
         train dataset, test dataset. 
     """
     data_dir = re.sub('cifar10s', 'cifar10', data_dir)
+    # print(use_augmentation)
     test_transform = transforms.Compose([transforms.ToTensor()])
     if use_augmentation == 'none':
         train_transform = test_transform
@@ -85,6 +88,14 @@ def load_cifar10s(data_dir, use_augmentation='base', use_consistency=False, aux_
             transforms.ToTensor(),
         ])
         train_transform.transforms.append(CutoutDefault(18))
+    elif use_augmentation == 'autoaugment_exp':
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(0.5),
+            CIFAR10Policy(),
+            transforms.ToTensor(),
+        ])
+
     elif use_augmentation == 'randaugment':
         train_transform = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -102,8 +113,21 @@ def load_cifar10s(data_dir, use_augmentation='base', use_consistency=False, aux_
     train_dataset = SemiSupervisedCIFAR10(base_dataset='cifar10', root=data_dir, train=True, download=True,
                                           transform=train_transform, aux_data_filename=aux_data_filename,
                                           add_aux_labels=True, aux_take_amount=aux_take_amount, validation=validation)
+
+
     test_dataset = SemiSupervisedCIFAR10(base_dataset='cifar10', root=data_dir, train=False, download=True,
                                          transform=test_transform)
+
+    # train_dataset = torchvision.datasets.CIFAR10('data/cifar10s', train=True, download=True, transform=Compose([
+    #     transforms.RandomCrop(
+    #         32,
+    #         padding=4,
+    #         fill=128),
+    #     transforms.RandomHorizontalFlip(),
+    #     CIFAR10Policy(),
+    #     ToTensor(), ]))
+
+
 
     if validation:
         val_dataset = torchvision.datasets.CIFAR10(root=data_dir, train=True, download=True, transform=test_transform)

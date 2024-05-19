@@ -1,25 +1,23 @@
 import os
 import argparse
 import math
-import time
-
 import numpy as np
 import torch
 import torchvision
+from accelerate import Accelerator
 from torchvision.transforms import ToTensor, Compose, Normalize
 from tqdm import tqdm
 
 from base_trainer import BaseTrainer
-from mod_fork_every2.mod_model_fork_every2 import *
 from normal_utils import CIFAR10_MEAN, CIFAR10_STD, DeNormalize
 from utils import get_obj_from_str, acc_fn, get_config, json_print, print_with_seperator
-
+import torch.nn as nn
 import yaml
 import json
 from torchinfo import summary
 import torch.optim.adamw
-# import torch_xla.distributed.xla_multiprocessing as xmp
-from accelerate import Accelerator
+from at_helper import mae_feat_loss
+import torch.nn.functional as F
 
 
 def get_model_mae(model: str = None, mask_ratio=0.75):
@@ -54,6 +52,44 @@ def instant_optimizer(optimizer_configs, model_parameter, batch_size):
     return optimizer(model_parameter, **configs)
 
 
+"""
+def adv_loss(model,
+             x_natural, x_adv, loss_start=0
+             ):
+    criterion = nn.L1Loss()
+    feats = model.forward_feat(x_natural)[loss_start:]
+
+    losses = 0
+    feats_adv = model.forward_feat(x_adv)[loss_start:]
+    for feat, feat_adv in zip(feats, feats_adv):
+        b, n, d = feat.shape
+        feat_mean = feat.mean(dim=[-1]).reshape(b, n, 1)
+        feat_std = feat.mean(dim=[-1]).reshape(b, n, 1)
+        feat_normal = (feat - feat_mean) / feat_std
+        feat_adv_normal = (feat_adv - feat_mean) / feat_std
+        loss = criterion(feat_adv_normal, feat_normal)
+        losses += loss / len(feats_adv)
+
+    return losses
+"""
+
+
+def adv_loss(model,
+             x_natural, x_adv, loss_start=0
+             ):
+    criterion_kl = nn.KLDivLoss(reduction='batchmean')
+    feats = model.forward_feat(x_natural)[loss_start:]
+
+    losses = 0
+    feats_adv = model.forward_feat(x_adv)
+    feats_adv = feats_adv[loss_start:]
+    for feat, feat_adv in zip(feats, feats_adv):
+        loss = criterion_kl(torch.log_softmax(feat_adv, -1), torch.softmax(feat, -1))
+        losses += loss / len(feats_adv)
+
+    return losses, feats, feats_adv
+
+
 class MaeTrainer(BaseTrainer):
     def __init__(self,
                  seed=2022,
@@ -78,11 +114,9 @@ class MaeTrainer(BaseTrainer):
                  save_every=500,
                  optimizer='torch.optim.AdamW',
 
-                 # optimizer_configs=
-
                  ):
         super().__init__(seed, batch_size, max_device_batch_size, total_epoch, mixed_precision, use_aux_dataset,
-                         unsup_fraction, aux_data_filename, save_every=save_every, transform=False)
+                         unsup_fraction, aux_data_filename, save_every=save_every, transform=True)
         self.accelerator = None
         self.compile = compile
         self.loss = loss
@@ -92,18 +126,13 @@ class MaeTrainer(BaseTrainer):
         #                                betas=(0.9, 0.999), weight_decay=weight_decay
         #                                )
 
-        # self.optim = instant_optimizer(optimizer, self.model.parameters(), batch_size)
-
         self.optim = instant_optimizer(optimizer, self.model.parameters(), batch_size)
-        # self.optim = torch.optim.AdamW(self.model.parameters(),lr=1e-3)
 
-        # summary(self.model, (1, 3, 32, 32), )
+        summary(self.model, (1, 3, 32, 32), )
 
         if compile:
-            import torch_xla.core.xla_model as xm
-            device = xm.xla_device()
-            self.model = torchvision.models.resnet18().to(device)
-            self.model = torch.compile(self.model, backend='torchxla_trace_once' )  # mode='max-autotune'
+            self.model = torch.compile(self.model, fullgraph=True,
+                                       mode='reduce-overhead')  # mode='max-autotune'  mode='reduce-overhead'
 
         lr_func = lambda epoch: min((epoch + 1) / (warmup_epoch + 1e-8),
                                     0.5 * (math.cos(epoch / total_epoch * math.pi) + 1))
@@ -120,32 +149,15 @@ class MaeTrainer(BaseTrainer):
         self.mask_ratio = mask_ratio
 
     def train(self):
-
-        self.accelerator = Accelerator(mixed_precision='bf16', )
-        print(self.accelerator.device,self.accelerator.mixed_precision)
-        # self.model = torch.compile(self.model,fullgraph=True, backend='openxla')
-
-        self.model, self.optim, \
+        self.accelerator = Accelerator(mixed_precision='fp16')
+        print(self.accelerator.device, self.accelerator.mixed_precision)
+        self.model, \
+            self.optim, \
             self.train_dataloader, \
-            self.val_dataloader, self.lr_scheduler = self.accelerator.prepare(self.model, self.optim,
-                                                                              self.train_dataloader,
-                                                                              self.val_dataloader, self.lr_scheduler
-                                                                              )
-
-        # self.model, self.optim, \
-        #     self.train_dataloader, \
-        #     self.val_dataloader = self.accelerator.prepare(self.model, self.optim,
-        #                                                    self.train_dataloader,
-        #                                                    self.val_dataloader,
-        #                                                    )
-
-        # self.steps_per_update = self.batch_size // self.load_batch_size // self.accelerator.num_processes
-        self.steps_per_update = self.batch_size // self.load_batch_size // self.accelerator.num_processes
-
-        # self.steps_per_update = 1
-
-        print(f'num_processes:{self.accelerator.num_processes} steps_per_update:{self.steps_per_update} ')
-        # model=self.accelerator.prepare(model)
+            self.val_dataloader = self.accelerator.prepare(self.model, self.optim, self.train_dataloader,
+                                                           self.val_dataloader,
+                                                           )
+        self.lr_scheduler = self.accelerator.prepare(self.lr_scheduler)
 
         best_val_acc = 0
         step_count = 0
@@ -157,47 +169,39 @@ class MaeTrainer(BaseTrainer):
             losses = []
             train_step = len(self.train_dataloader)
             with tqdm(total=train_step, desc=f'Epoch {e + 1}/{self.total_epoch}', postfix=dict,
-                      mininterval=0.3, disable=not self.accelerator.is_main_process) as pbar:
+                      mininterval=0.3) as pbar:
                 for img, label in self.train_dataloader:
 
                     with self.accelerator.autocast():
-                        # if self.accelerator.is_main_process:
-                        #     print(img.shape)
-                        # print(img.shape)
+                        img_normal = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
                         step_count += 1
-                        img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
 
+                        loss_start = 0
+                        x_adv = mae_feat_loss(self.model, x_natural=img, loss_start=loss_start, steps=10)
 
-                        # predicted_img, mask = model.train_forward(img)
+                        loss_adv, feats, feats_adv = adv_loss(self.model, img, x_adv, loss_start=loss_start)
+
+                        feats = feats[-1]
+                        feats_adv = feats_adv[-1]
+
+                        feats = F.normalize(feats, dim=-1)
+                        feats_adv = F.normalize(feats_adv, dim=-1)
+
+                        labels = torch.arange(0, feats.shape[0], device=feats.device).long()
+
+                        logit_scale = self.model.logit_scale.exp()
+                        logits_per_ori = logit_scale * (feats @ feats_adv.T)
+                        logits_per_adv = logit_scale * (feats_adv @ feats.T)
+                        contrast_loss = (F.cross_entropy(logits_per_ori, labels) + F.cross_entropy(logits_per_adv,
+                                                                                                   labels)) / 2
                         predicted_img, mask = self.model(img)
-
                         if self.loss == 'l2':
-                            loss = torch.mean((predicted_img - img) ** 2 * mask) / self.mask_ratio
+                            loss = torch.mean((predicted_img - img_normal) ** 2 * mask) / self.mask_ratio
                         else:
-                            loss = torch.mean(torch.abs(predicted_img - img) * mask) / self.mask_ratio
+                            loss = torch.mean(torch.abs(predicted_img - img_normal) * mask) / self.mask_ratio
 
+                    self.accelerator.backward((loss_adv + loss + contrast_loss) / self.steps_per_update)
 
-                        # for transformer in self.model.encoder.transformer:
-                        #     if not transformer.skip:
-                        #         z_router_losses.append(transformer.entropy_loss)
-                        #
-                        # z_router_losses = torch.stack(z_router_losses, dim=0).mean()
-
-                        # model.encoder.shuffle = PatchShuffle(0.1)
-                        # loss_adv = trades_loss(model, img, img, optim,perturb_steps=3,beta=5.0)
-                        # model.encoder.shuffle = PatchShuffle(args.mask_ratio)
-
-                        # adv_img = fgsm_attack_data(model, img, img, epsilon=16 / 255)
-                        # predicted_img_adv, mask_adv = model(img)
-                        # loss_adv = torch.mean((predicted_img - img) ** 2 * mask_adv) / args.mask_ratio
-                    # accelerator.backward(loss + 1e-4 * z_router_losses)
-
-                    self.accelerator.backward(loss)#/ self.steps_per_update
-                    # time.sleep(2)
-
-                    # accelerator.backward(loss+loss_adv)
-                    # accelerator.backward(loss_adv)
-                    # loss.backward()
                     if step_count % self.steps_per_update == 0:
                         self.accelerator.wait_for_everyone()
                         self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
@@ -206,44 +210,30 @@ class MaeTrainer(BaseTrainer):
                         self.optim.zero_grad()
 
                         self.accelerator.wait_for_everyone()
-
-                    losses.append(self.accelerator.gather(loss).detach().cpu())
-                    if self.accelerator.is_main_process:
-                        # losses=self.accelerator.ga
-
-                        pbar.set_postfix(**{'Loss': np.mean(losses),
-                                            # 'z_router_losses': np.mean(z_router_losses.item())
-                                            # 'Adv_Loss': np.mean(loss_adv.item())
-                                            }
-                                         )
-                        pbar.update(1)
-
+                    losses.append(loss.item())
+                    pbar.set_postfix(**{
+                        'Loss': np.mean(losses),
+                        'Loss Adv': loss_adv.item(),
+                        'contrast_loss': contrast_loss.item(),
+                        'logit_scale': logit_scale.item()
+                    }
+                                     )
+                    pbar.update(1)
             self.lr_scheduler.step()
-
-            # print(self.lr_scheduler.get_lr())
-
-            # avg_loss = sum(losses) / len(losses)
-            # print(f'In epoch {e}, average traning loss is {avg_loss}.')
-
             ''' save model '''
-
-            # print(model)
-
-            # if (e + 1) % self.save_every == 0:
-            #     print('eval!!!!!!')
-            #     self.eval()
-            #     self.save()
+            if (e + 1) % self.save_every == 0:
+                print('eval!!!!!!')
+                self.eval()
+                self.save()
 
             # torch.save(model, args.output_model_path)
-
-            """ """
 
     def eval(self):
         ''' visualize the first 16 predicted images on val dataset'''
         self.model.eval()
         with torch.no_grad():
             val_img = torch.stack([self.val_dataset[i][0] for i in range(16)])
-            val_img = val_img.to(self.device)
+            val_img = val_img.to(self.accelerator.device)
             predicted_val_img, mask = self.model(val_img)
             predicted_val_img = predicted_val_img * mask + val_img * (1 - mask)
             img = torch.cat([val_img * (1 - mask), predicted_val_img, val_img], dim=0)
@@ -271,9 +261,13 @@ class MaeTrainer(BaseTrainer):
         pass
 
 
-def main():
+def test(trainer):
     print('hi')
 
+    trainer.train()
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, )  # default=42
     parser.add_argument('-bs', '--batch_size', type=int, )  # default=4096
@@ -284,7 +278,7 @@ def main():
     parser.add_argument('--total_epoch', type=int, )  # default 2000
     parser.add_argument('--warmup_epoch', type=int, )  # default=200
     parser.add_argument('--loss', type=str, )  # default='l2'
-    parser.add_argument('--yaml_path', type=str, default='configs/mae/baseline/tiny.yaml')#'configs/mae/moe_soft/tiny.yaml'
+    parser.add_argument('--yaml_path', type=str, default='configs/mae/adv_feat_clip/tiny.yaml')
     parser.add_argument('--aux_data_filename', type=str, default='/home/jtitor/Downloads/1m.npz')
     parser.add_argument('--save_every', type=int, )
     parser.add_argument('--compile', action='store_true', default=None)
@@ -297,32 +291,10 @@ def main():
 
     # from accelerate import notebook_launcher, Accelerator
     #
-    # notebook_launcher(trainer.train, num_processes=8)
+    # notebook_launcher(test,(trainer,) , num_processes=8)
+    #
+    # pass
 
+    # trainer.train()
 
-if __name__ == "__main__":
-    main()
-
-# from accelerate import Accelerator
-#
-#
-# def main():
-#     # Accelerator instance.
-#     accelerator = Accelerator()
-#     print(accelerator.num_processes)
-#
-#     # Begin training
-#     # train(opts, accelerator)
-#
-#     print("OMFG, training finished!")
-
-
-# from accelerate import notebook_launcher, Accelerator
-
-# notebook_launcher(trainer.train, num_processes=8)
-
-# xmp.spawn(test,(trainer,))
-
-# trainer.train()
-
-# trainer.save()
+    # trainer.save()

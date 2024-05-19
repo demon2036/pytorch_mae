@@ -9,14 +9,15 @@ from torchvision.transforms import ToTensor, Compose, Normalize
 from tqdm import tqdm
 
 from base_trainer import BaseTrainer
-from mod_fork_every2.mod_model_fork_every2 import *
 from normal_utils import CIFAR10_MEAN, CIFAR10_STD, DeNormalize
 from utils import get_obj_from_str, acc_fn, get_config, json_print, print_with_seperator
-
+import torch.nn as nn
 import yaml
 import json
 from torchinfo import summary
 import torch.optim.adamw
+from at_helper import mae_feat_loss
+import torch.nn.functional as F
 
 
 def get_model_mae(model: str = None, mask_ratio=0.75):
@@ -51,6 +52,44 @@ def instant_optimizer(optimizer_configs, model_parameter, batch_size):
     return optimizer(model_parameter, **configs)
 
 
+"""
+def adv_loss(model,
+             x_natural, x_adv, loss_start=0
+             ):
+    criterion = nn.L1Loss()
+    feats = model.forward_feat(x_natural)[loss_start:]
+
+    losses = 0
+    feats_adv = model.forward_feat(x_adv)[loss_start:]
+    for feat, feat_adv in zip(feats, feats_adv):
+        b, n, d = feat.shape
+        feat_mean = feat.mean(dim=[-1]).reshape(b, n, 1)
+        feat_std = feat.mean(dim=[-1]).reshape(b, n, 1)
+        feat_normal = (feat - feat_mean) / feat_std
+        feat_adv_normal = (feat_adv - feat_mean) / feat_std
+        loss = criterion(feat_adv_normal, feat_normal)
+        losses += loss / len(feats_adv)
+
+    return losses
+"""
+
+
+def adv_loss(model,
+             x_natural, x_adv, loss_start=0
+             ):
+    criterion_kl = nn.KLDivLoss(reduction='batchmean')
+    feats = model.forward_feat(x_natural)[loss_start:]
+
+    losses = 0
+    feats_adv = model.forward_feat(x_adv)
+    feats_adv = feats_adv[loss_start:]
+    for feat, feat_adv in zip(feats, feats_adv):
+        loss = criterion_kl(torch.log_softmax(feat_adv, -1), torch.softmax(feat, -1))
+        losses += loss / len(feats_adv)
+
+    return losses, feats, feats_adv
+
+
 class MaeTrainer(BaseTrainer):
     def __init__(self,
                  seed=2022,
@@ -74,8 +113,6 @@ class MaeTrainer(BaseTrainer):
                  compile=False,
                  save_every=500,
                  optimizer='torch.optim.AdamW',
-
-                 # optimizer_configs=
 
                  ):
         super().__init__(seed, batch_size, max_device_batch_size, total_epoch, mixed_precision, use_aux_dataset,
@@ -138,30 +175,43 @@ class MaeTrainer(BaseTrainer):
                     z_router_losses = []
                     with self.accelerator.autocast():
                         step_count += 1
-                        img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
+                        img_normal = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
                         # predicted_img, mask = model.train_forward(img)
                         predicted_img, mask = self.model(img)
 
+                        loss_start = 0
+                        x_adv = mae_feat_loss(self.model, x_natural=img, loss_start=loss_start, steps=10)
+
+                        loss_adv, feats, feats_adv = adv_loss(self.model, img, x_adv, loss_start=loss_start)
+
+                        feats = feats[-1]
+                        feats_adv = feats_adv[-1]
+
+                        feats = F.normalize(feats, dim=-1)
+                        feats_adv = F.normalize(feats_adv, dim=-1)
+
+                        labels = torch.arange(0, feats.shape[0], device=feats.device).long()
+                        logits_per_ori = (feats @ feats_adv.T) / 0.07
+                        logits_per_adv = (feats_adv @ feats.T) / 0.07
+                        contrast_loss = (F.cross_entropy(logits_per_ori, labels) + F.cross_entropy(logits_per_adv,
+                                                                                                   labels)) / 2
+
+                        # loss = torch.mean((predicted_img - img) ** 2)
+
+                        """"""
                         if self.loss == 'l2':
-                            loss = torch.mean((predicted_img - img) ** 2 * mask) / self.mask_ratio
+                            loss = torch.mean((predicted_img - img_normal) ** 2 * mask) / self.mask_ratio
                         else:
-                            loss = torch.mean(torch.abs(predicted_img - img) * mask) / self.mask_ratio
+                            loss = torch.mean(torch.abs(predicted_img - img_normal) * mask) / self.mask_ratio
 
-                        # for transformer in self.model.encoder.transformer:
-                        #     if not transformer.skip:
-                        #         z_router_losses.append(transformer.entropy_loss)
-                        #
-                        # z_router_losses = torch.stack(z_router_losses, dim=0).mean()
+                    self.accelerator.backward((loss_adv + loss + contrast_loss) / self.steps_per_update)
 
-                        # model.encoder.shuffle = PatchShuffle(0.1)
-                        # loss_adv = trades_loss(model, img, img, optim,perturb_steps=3,beta=5.0)
-                        # model.encoder.shuffle = PatchShuffle(args.mask_ratio)
+                    # for name,p in self.model.encoder.named_parameters():
+                    #     print(name,p.grad)
+                    #
+                    # while True:
+                    #     pass
 
-                        # adv_img = fgsm_attack_data(model, img, img, epsilon=16 / 255)
-                        # predicted_img_adv, mask_adv = model(img)
-                        # loss_adv = torch.mean((predicted_img - img) ** 2 * mask_adv) / args.mask_ratio
-                    # accelerator.backward(loss + 1e-4 * z_router_losses)
-                    self.accelerator.backward(loss / self.steps_per_update)
                     # accelerator.backward(loss+loss_adv)
                     # accelerator.backward(loss_adv)
                     # loss.backward()
@@ -175,6 +225,8 @@ class MaeTrainer(BaseTrainer):
                         self.accelerator.wait_for_everyone()
                     losses.append(loss.item())
                     pbar.set_postfix(**{'Loss': np.mean(losses),
+                                        'Loss Adv': loss_adv.item(),
+                                        'contrast_loss': contrast_loss.item()
                                         # 'z_router_losses': np.mean(z_router_losses.item())
                                         # 'Adv_Loss': np.mean(loss_adv.item())
                                         }
@@ -231,6 +283,12 @@ class MaeTrainer(BaseTrainer):
         pass
 
 
+def test(trainer):
+    print('hi')
+
+    trainer.train()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, )  # default=42
@@ -250,6 +308,7 @@ if __name__ == "__main__":
 
     yaml_data = get_config(args)
     trainer = MaeTrainer(**yaml_data)
+
     trainer.train()
 
     # from accelerate import notebook_launcher, Accelerator
@@ -261,142 +320,3 @@ if __name__ == "__main__":
     # trainer.train()
 
     # trainer.save()
-
-"""
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--seed', type=int, default=2022)
-    parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--max_device_batch_size', type=int, default=256)
-    parser.add_argument('--base_learning_rate', type=float, default=1e-3)
-    parser.add_argument('--weight_decay', type=float, default=0.05)
-    parser.add_argument('--total_epoch', type=int, default=100)
-    parser.add_argument('--warmup_epoch', type=int, default=5)
-    parser.add_argument('--pretrained_model_path', type=str, default=None)
-    parser.add_argument('--output_model_path', type=str, default='vit-t-classifier-from_scratch.pth')
-    parser.add_argument('--model', type=str, default='tiny')
-
-    args = parser.parse_args()
-
-    setup_seed(args.seed)
-
-    batch_size = args.batch_size
-    load_batch_size = min(args.max_device_batch_size, batch_size)
-
-    assert batch_size % load_batch_size == 0
-    steps_per_update = batch_size // load_batch_size
-
-    train_dataset = torchvision.datasets.CIFAR10('data', train=True, download=True, transform=Compose([
-        transforms.RandomCrop(32, padding=4, fill=128),  # fill parameter needs torchvision installed from source
-        transforms.RandomHorizontalFlip(), CIFAR10Policy(),
-        ToTensor(), Normalize(0.5, 0.5)]))
-
-    val_dataset = torchvision.datasets.CIFAR10('data', train=False, download=True,
-                                               transform=Compose([ToTensor(), Normalize(0.5, 0.5)]))
-
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, load_batch_size, shuffle=True, num_workers=4)
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, load_batch_size, shuffle=False, num_workers=4)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    # model = ViT_2_B().to(device)
-
-    if device == 'cuda':
-        net = torch.nn.DataParallel(model)
-    # loss_fn = torch.nn.CrossEntropyLoss()
-    loss_fn = torch.nn.CrossEntropyLoss()
-    acc_fn = lambda logit, label: torch.mean((logit.argmax(dim=-1) == label).float())
-    #
-    optim = torch.optim.AdamW(model.parameters(), lr=args.base_learning_rate * args.batch_size / 256,
-                              betas=(0.9, 0.999), weight_decay=args.weight_decay)
-
-    # optim = torch.optim.AdamW(model.parameters(), lr=1e-4 * args.batch_size / 256,
-    #                           weight_decay=1e-5)
-
-    lr_func = lambda epoch: min((epoch + 1) / (args.warmup_epoch + 1e-8),
-                                0.5 * (math.cos(epoch / args.total_epoch * math.pi) + 1))
-    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=lr_func, verbose=True)
-
-    best_val_acc = 0
-    step_count = 0
-    optim.zero_grad()
-
-    accelerator = Accelerator(mixed_precision='fp16')
-
-    model, optim, train_dataloader, lr_scheduler = accelerator.prepare(model, optim, train_dataloader, lr_scheduler)
-
-    for e in range(args.total_epoch):
-        model.train()
-        losses = []
-        acces = []
-        train_step = len(train_dataloader)
-        with tqdm(total=train_step, desc=f'Train Epoch {e + 1}/{args.total_epoch}', postfix=dict,
-                  mininterval=0.3) as pbar:
-            for img, label in iter(train_dataloader):
-                z_router_losses = []
-                with accelerator.autocast():
-                    step_count += 1
-                    img = img.to(device)
-                    label = label.to(device)
-                    logits = model(img)
-                    loss = loss_fn(logits, label)  # F.softmax(logits, -1)
-
-                    for transformer in model.transformer:
-                        if not transformer.skip:
-                            z_router_losses.append(transformer.entropy_loss)
-
-                    z_router_losses = torch.stack(z_router_losses, dim=0).mean()
-
-                acc = acc_fn(logits, label)
-                # loss.backward()
-                # accelerator.backward(loss+1e-4 * z_router_losses)  #  +1e-2 * z_router_losses
-                accelerator.backward(loss)
-
-                if step_count % steps_per_update == 0:
-                    # accelerator.unscale_gradients(optimizer)
-                    accelerator.clip_grad_norm_(model.parameters(), 1.0)
-                    optim.step()
-                    optim.zero_grad()
-                losses.append(loss.item())
-                acces.append(acc.item())
-
-                pbar.set_postfix(**{'Train Loss': np.mean(losses),
-                                    'Tran accs': np.mean(acces),
-                                    'z_router_losses': np.mean(z_router_losses.item())
-                                    })
-                pbar.update(1)
-
-        lr_scheduler.step()
-        avg_train_loss = sum(losses) / len(losses)
-        avg_train_acc = sum(acces) / len(acces)
-        # print(f'In epoch {e}, average training loss is {avg_train_loss}, average training acc is {avg_train_acc}.')
-
-        model.eval()
-        with torch.no_grad():
-            losses = []
-            acces = []
-            val_step = len(val_dataloader)
-            with tqdm(total=val_step, desc=f'Val Epoch {e + 1}/{args.total_epoch}', postfix=dict,
-                      mininterval=0.3) as pbar2:
-                for img, label in iter(val_dataloader):
-                    img = img.to(device)
-                    label = label.to(device)
-                    logits = model(img)
-                    loss = loss_fn(logits, label)
-                    acc = acc_fn(logits, label)
-                    losses.append(loss.item())
-                    acces.append(acc.item())
-
-                    pbar2.set_postfix(**{'Val Loss': np.mean(losses),
-                                         'Val accs': np.mean(acces)})
-                    pbar2.update(1)
-            avg_val_loss = sum(losses) / len(losses)
-            avg_val_acc = sum(acces) / len(acces)
-            # print(f'In epoch {e}, average validation loss is {avg_val_loss}, average validation acc is {avg_val_acc}.')  
-
-        if avg_val_acc > best_val_acc:
-            best_val_acc = avg_val_acc
-            print(f'saving best model with acc {best_val_acc} at {e} epoch!')
-            torch.save(model, args.output_model_path)
-"""

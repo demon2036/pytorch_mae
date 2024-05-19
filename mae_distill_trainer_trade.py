@@ -1,4 +1,5 @@
 import collections
+import copy
 import os
 import argparse
 import math
@@ -7,18 +8,23 @@ import numpy as np
 import torch
 import torchvision
 from autoattack import AutoAttack
+from robustbench import load_model
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from torchvision.transforms import ToTensor, Compose, Normalize
 from tqdm import tqdm
 
 from base_trainer import BaseTrainer
-from mae_adv.model import ViT_Classifier
+from baseline.model import *
 from normal_utils import CIFAR10_MEAN, CIFAR10_STD
 from utils import setup_seed, get_obj_from_str, acc_fn, get_config
 from accelerate import Accelerator
 from autoaugment import CIFAR10Policy
 from torchinfo import summary
+import robustbench
+import torch.nn.functional as F
+import torch.nn as nn
+from trades import trades_loss, trades_loss_with_adv
 
 
 def get_model_finetune(model: str = None, pretrained_model_path: str = None, is_mae=True):
@@ -30,25 +36,56 @@ def get_model_finetune(model: str = None, pretrained_model_path: str = None, is_
 
         if pretrained_model_path is not None:
             data = torch.load(pretrained_model_path)
-            # print(data)
-
-            # for key in data.keys():
-            #     print(key)
-            # while True:
-            #     pass
-
-            # data= collections.OrderedDict([(k.replace('_orig_mod.',''), v)  for k, v in data.items()])
-            # print(type(data))
-
-            # while True:
-            #     pass
-
             mae_model.load_state_dict(data)
 
         model = ViT_Classifier(mae_model.encoder, num_classes=10)
     else:
         model = mae_model
     return model
+
+
+def fgsm_attack(model, image, label, criterion, epsilon=8 / 255):
+    # 原始图像的预测结果
+    # 计算损失函数关于输入图像的梯度
+
+    image.requires_grad = True
+    output = model(image)
+    loss = criterion(output, label)
+    model.zero_grad()
+    loss.backward()
+    gradient = image.grad.data
+
+    # FGSM 攻击
+    perturbed_image = image + epsilon * torch.sign(gradient)
+    perturbed_image = torch.clamp(perturbed_image, 0, 1)  # 将图像像素值限制在 [0, 1] 范围内
+    return perturbed_image
+
+
+# def fgsm_attack(model, image, label, criterion, epsilon=8 / 255):
+#     # 原始图像的预测结果
+#     # 计算损失函数关于输入图像的梯度
+#
+#     image.requires_grad = True
+#     output,out_distill = model(image)
+#     loss = criterion(output, label)
+#     model.zero_grad()
+#     loss.backward()
+#     gradient = image.grad.data
+#
+#     # FGSM 攻击
+#     perturbed_image = image + epsilon * torch.sign(gradient)
+#     perturbed_image = torch.clamp(perturbed_image, 0, 1)  # 将图像像素值限制在 [0, 1] 范围内
+#
+#     loss = criterion(out_distill, label)
+#     model.zero_grad()
+#     loss.backward()
+#     gradient = image.grad.data
+#
+#     # FGSM 攻击
+#     perturbed_image_distill = image + epsilon * torch.sign(gradient)
+#     perturbed_image_distill = torch.clamp(perturbed_image_distill, 0, 1)  # 将图像像素值限制在 [0, 1] 范围内
+#
+#     return perturbed_image,perturbed_image_distill
 
 
 class MaeFinetuneTrainer(BaseTrainer):
@@ -68,29 +105,19 @@ class MaeFinetuneTrainer(BaseTrainer):
                  save_model_name: str = None,
                  mixed_precision='fp16',
                  save_every=500,
-                 compile=True,
+                 compile=False,
+                 use_aux_dataset=False,
+                 unsup_fraction=0.9,
+                 aux_data_filename='/home/jtitor/Downloads/1m.npz',
                  ):
-        super().__init__(seed, batch_size, max_device_batch_size, total_epoch, mixed_precision, save_every=save_every)
+        super().__init__(seed, batch_size, max_device_batch_size, total_epoch, mixed_precision, save_every=save_every,
+                         transform=False, use_aux_dataset=use_aux_dataset, unsup_fraction=unsup_fraction,
+                         aux_data_filename=aux_data_filename)
 
         self.loss_fn = loss_fn
-        self.model = model_instant_function(model_target, pretrained_model_path)
-        self.optim = torch.optim.AdamW(self.model.parameters(),
-                                       lr=base_learning_rate * batch_size / 256,
-                                       betas=(0.9, 0.999), weight_decay=weight_decay
-                                       )
-        # configs = {
-        #     'lr': base_learning_rate * batch_size / 256,
-        #     'betas': (0.9, 0.999),
-        #     weight_decay: weight_decay
-        # }
-        # self.optim = torch.optim.AdamW([
-        #     {'params': self.model.head.parameters(), **configs},
-        #     {'params': self.model.layer_norm.parameters(), **configs},
-        #
-        # ],
-        # )
+        self.model = model_instant_function(model_target, pretrained_model_path, is_mae=True)
 
-        # summary(self.model, (1, 3, 32, 32), )
+        summary(self.model, (1, 3, 32, 32), )
         if compile:
             self.model = torch.compile(self.model, fullgraph=False, )  # mode='max-autotune'
 
@@ -100,40 +127,125 @@ class MaeFinetuneTrainer(BaseTrainer):
         self.accelerator = Accelerator(mixed_precision=mixed_precision)
 
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optim, lr_lambda=lr_func, verbose=True)
+        self.teacher_model = load_model(model_name='Cui2023Decoupled_WRN-28-10', dataset='cifar10', threat_model='Linf')
+        # self.teacher_model = load_model(model_name='Wang2023Better_WRN-28-10', dataset='cifar10', threat_model='Linf')
+        # self.teacher_model = get_obj_from_str('wideresnet.wideresnet.wideresnetwithswish')()
+        # self.teacher_model.load_state_dict(torch.load('wideresnet_28_10.pt'))
+        #
+        # self.teacher_model = nn.Sequential(Normalize(CIFAR10_MEAN, CIFAR10_STD), self.teacher_model)
+        self.model = nn.Sequential(Normalize(CIFAR10_MEAN, CIFAR10_STD), self.model)
+        self.model.load_state_dict(torch.load('baseline_tiny.pt'))
 
-        self.model, \
+        self.model=copy.deepcopy(self.teacher_model)
+
+        self.optim = torch.optim.AdamW(self.model.parameters(),
+                                       lr=1e-5,  # base_learning_rate * batch_size / 256
+                                       betas=(0.9, 0.999), weight_decay=0
+                                       )
+
+
+        self.model, self.teacher_model, \
             self.optim, \
             self.train_dataloader, \
             self.val_dataloader, \
-            self.lr_scheduler = self.accelerator.prepare(self.model, self.optim, self.train_dataloader,
-                                                         self.val_dataloader,
+            self.lr_scheduler = self.accelerator.prepare(self.model, self.teacher_model, self.optim,
+                                                         self.train_dataloader, self.val_dataloader,
                                                          self.lr_scheduler)
 
         self.save_model_path = save_model_path
         self.save_model_name = save_model_name
+
         # self.pretrained_model_path = pretrained_model_path
 
     def train(self):
         best_val_acc = 0
         step_count = 0
+
+        def normalize(logit):
+            mean = logit.mean(dim=-1, keepdims=True)
+            std = logit.std(dim=-1, keepdims=True)
+            return (logit - mean) / (1e-7 + std)
+
+        def distill_loss(outputs_kd, teacher_outputs, tau=1.0, distillation_type='soft'):
+            T = tau
+            if distillation_type == 'soft':
+                # taken from https://github.com/peterliht/knowledge-distillation-pytorch/blob/master/model/net.py#L100
+                # with slight modifications
+                outputs_kd = normalize(outputs_kd)
+                teacher_outputs = normalize(teacher_outputs)
+
+                distillation_loss = F.kl_div(
+                    F.log_softmax(outputs_kd / T, dim=1),
+                    #We provide the teacher's targets in log probability because we use log_target=True
+                    #(as recommended in pytorch https://github.com/pytorch/pytorch/blob/9324181d0ac7b4f7949a574dbc3e8be30abe7041/torch/nn/functional.py#L2719)
+                    #but it is possible to give just the probabilities and set log_target=False. In our experiments we tried both.
+                    F.log_softmax(teacher_outputs / T, dim=1),
+                    reduction='sum',
+                    log_target=True
+                ) * (T * T) / outputs_kd.numel()
+            else:
+                distillation_loss = F.cross_entropy(outputs_kd, teacher_outputs.argmax(dim=1))
+
+            return distillation_loss
+
         self.optim.zero_grad()
         for e in range(self.total_epoch):
             self.model.train()
             losses = []
+            losses_teacher = []
             acces = []
+
+            adversary = AutoAttack(self.model.forward, norm='Linf', eps=8 / 255, version='custom', verbose=True,
+                                   attacks_to_run=['apgd-ce', 'apgd-dlr'])
+
+            """"""
             train_step = len(self.train_dataloader)
+
+            temp = None
+
+            move_temp = None
+            move_temp_acc=None
+
+            temps = []
+            move_temps=[]
             with tqdm(total=train_step, desc=f'Train Epoch {e + 1}/{self.total_epoch}', postfix=dict,
                       mininterval=0.3) as pbar:
                 for img, label in iter(self.train_dataloader):
                     z_router_losses = []
+
                     with self.accelerator.autocast():
                         step_count += 1
                         # img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
-                        logits = self.model(img)
+                        # self.model.eval()
+                        # adv_img = fgsm_attack(self.model, img, label, self.loss_fn, )
+                        epsilon = 8 / 255
+                        perturb_steps = 10
+                        trade_loss, adv_img = trades_loss(self.model, img, label, step_size=epsilon / perturb_steps,
+                                                          epsilon=epsilon, perturb_steps=perturb_steps,
+                                                          optimizer=self.optim, beta=8)
 
-                        # print(logits)
+                        # adv_img = adversary.run_standard_evaluation(img, label)
 
-                        loss = self.loss_fn(logits, label)  # F.softmax(logits, -1)
+                        # self.model.train()
+
+                        # logits, logits_distill = self.model(adv_img)
+                        # logits_org=self.model(img)
+                        logits = self.model(adv_img)
+
+                        #
+                        with torch.no_grad():
+                            self.teacher_model.eval()
+                            teacher_logits = self.teacher_model(adv_img)
+                            teacher_logits_org = self.teacher_model(img)
+                            teacher_logits = (
+                                    torch.softmax(teacher_logits, -1) + torch.softmax(teacher_logits_org, -1))  #/ 2
+
+                        loss = distill_loss(logits, teacher_logits,
+                                            tau=10)  #+trade_loss/5  #+ self.loss_fn(logits,label)  #+distill_loss(logits_org,teacher_logits_org)  #+self.loss_fn(self.model(img), label)
+
+                        # loss = trade_loss
+
+                        # loss = self.loss_fn(logits, label)  # F.softmax(logits, -1)
 
                         # for transformer in self.model.transformer:
                         #     if not transformer.skip:
@@ -141,7 +253,29 @@ class MaeFinetuneTrainer(BaseTrainer):
                         #
                         # z_router_losses = torch.stack(z_router_losses, dim=0).mean()
 
-                    acc = acc_fn(logits, label)
+                    student_acc = acc_fn(logits, label)
+
+                    if temp is None:
+                        temp = adv_img
+                        move_temp=adv_img
+                        temp_acc = student_acc
+                        move_temp_acc = student_acc
+                    else:
+                        temp_logits = self.model(temp)
+                        temp_acc = acc_fn(temp_logits, label)
+
+                        # temp = trades_loss_with_adv(self.model, img, label, step_size=1/255 ,
+                        #                                  epsilon=epsilon, perturb_steps=1,
+                        #                                  optimizer=self.optim, beta=8, x_adv=temp)
+                        if step_count%4==0:
+                            print(100)
+                            move_temp=img
+
+
+                        move_temp_logits = self.model(move_temp)
+                        move_temp_acc = acc_fn(move_temp_logits, label)
+
+                    teacher_acc = acc_fn(teacher_logits, label)
                     # loss.backward()
                     # accelerator.backward(loss+1e-4 * z_router_losses)  #  +1e-2 * z_router_losses
                     self.accelerator.backward(loss)
@@ -151,62 +285,61 @@ class MaeFinetuneTrainer(BaseTrainer):
                         self.optim.step()
                         self.optim.zero_grad()
                     losses.append(loss.item())
-                    acces.append(acc.item())
+                    acces.append(student_acc.item())
+                    losses_teacher.append(teacher_acc.item())
+                    temps.append(temp_acc.item())
+                    move_temps.append(move_temp_acc.item())
 
                     pbar.set_postfix(**{'Train Loss': np.mean(losses),
+                                        'Teacher acc': np.mean(losses_teacher),
                                         'Tran accs': np.mean(acces),
+                                        'temps accs': np.mean(temps),
+                                        'move_temp_acc': np.mean(move_temp_acc.item()),
                                         # 'z_router_losses': np.mean(z_router_losses.item())
                                         })
                     pbar.update(1)
 
             self.lr_scheduler.step()
-            avg_train_loss = sum(losses) / len(losses)
-            avg_train_acc = sum(acces) / len(acces)
+            # avg_train_loss = sum(losses) / len(losses)
+            # avg_train_acc = sum(acces) / len(acces)
             # print(f'In epoch {e}, average training loss is {avg_train_loss}, average training acc is {avg_train_acc}.')
 
-            avg_val_acc = self.eval(e)
+            avg_val_acc = self.eval(e, self.model)
 
             if avg_val_acc > best_val_acc:
                 best_val_acc = avg_val_acc
                 print(f'saving best model with acc {best_val_acc} at {e} epoch!')
                 self.save()
+        """ """
 
-    def eval(self, epoch):
-        self.model.eval()
-        adversary = AutoAttack(self.model, norm='Linf', eps=8 / 255, version='custom', verbose=True,
+        # self.eval(0, self.distill_model)
+
+    def eval(self, epoch, model):
+        model.eval()
+        adversary = AutoAttack(model.forward, norm='Linf', eps=8 / 255, version='custom', verbose=True,
                                attacks_to_run=['apgd-ce', 'apgd-dlr'])
+        losses = []
+        acces = []
+        val_step = len(self.val_dataloader)
+        with tqdm(total=val_step, desc=f'Val Epoch {epoch + 1}/{self.total_epoch}', postfix=dict,
+                  mininterval=0.3) as pbar2:
+            for img, label in iter(self.val_dataloader):
+                # img = Normalize(CIFAR10_MEAN, CIFAR10_STD)(img)
+                adv_img = adversary.run_standard_evaluation(img, label)
 
-        with torch.no_grad():
-            losses = []
-            acces = []
-            val_step = len(self.val_dataloader)
-            with tqdm(total=val_step, desc=f'Val Epoch {epoch + 1}/{self.total_epoch}', postfix=dict,
-                      mininterval=0.3) as pbar2:
-                for img, label in iter(self.val_dataloader):
-                    # adv_img = adversary.run_standard_evaluation(img, label)
-                    # logits, feats = self.model(img, return_feats=True)
-                    # logits_adv, feats_adv = self.model(adv_img, return_feats=True)
-                    #
-                    # import torch.nn.functional as F
-                    # for i, (feat, feta_adv) in enumerate(zip(feats, feats_adv)):
-                    #     js_div = 0.5 * F.kl_div(torch.log_softmax(feta_adv, -1), torch.softmax(feat, -1))
-                    #     js_div += 0.5 * F.kl_div(torch.log_softmax(feat, -1), torch.softmax(feta_adv, -1))
-                    #
-                    #     print(js_div)
-                    #
-                    # print(F.softmax(logits, -1))
-                    # print(F.softmax(logits_adv, -1))
-                    logits = self.model(img)
-
+                # adv_img = fgsm_attack(model, img, label, self.loss_fn)
+                model.eval()
+                with torch.no_grad():
+                    logits = model(adv_img)
                     loss = self.loss_fn(logits, label)
                     acc = acc_fn(logits, label)
-                    losses.append(loss.item())
-                    acces.append(acc.item())
+                losses.append(loss.item())
+                acces.append(acc.item())
 
-                    pbar2.set_postfix(**{'Val Loss': np.mean(losses),
-                                         'Val accs': np.mean(acces)})
-                    pbar2.update(1)
-                    # break
+                pbar2.set_postfix(**{'Val Loss': np.mean(losses),
+                                     'Val accs': np.mean(acces)})
+                pbar2.update(1)
+                break
             avg_val_loss = sum(losses) / len(losses)
             avg_val_acc = sum(acces) / len(acces)
             print(
@@ -219,8 +352,12 @@ class MaeFinetuneTrainer(BaseTrainer):
         torch.save(self.accelerator.get_state_dict(self.model), f'{self.save_model_path}/{self.save_model_name}.pt')
         # torch.save(self.model, args.output_model_path)
 
-    def load(self, path='save_model_path/mae/baseline/baseline_tiny.pt'):
-        self.model.load_state_dict(torch.load(path), strict=False)
+    def load(self):
+        """
+        if pretrained_model_path is not None:
+            mae_model.load_state_dict(torch.load(pretrained_model_path))
+        """
+        pass
 
 
 if __name__ == "__main__":
@@ -235,7 +372,7 @@ if __name__ == "__main__":
     parser.add_argument('--pretrained_model_path', type=str, )
     parser.add_argument('--save_every', type=int, )
     parser.add_argument('--yaml_path', type=str,
-                        default='configs/vit/wideresnet/wideresnet_28_10.yaml')  #'configs/vit/baseline/tiny.yaml'
+                        default='configs/vit/baseline/tiny.yaml')  #'configs/vit/baseline/tiny.yaml'  #configs/vit/wideresnet/wideresnet_28_10.yaml
 
     args = parser.parse_args()
     # print('Using Default Config From Yaml')
@@ -245,11 +382,7 @@ if __name__ == "__main__":
     yaml_data = get_config(args)
 
     trainer = MaeFinetuneTrainer(**yaml_data, )
-    # trainer.load('save_model_path/vit/baseline_aux/baseline_aux09_tiny.pt')
     trainer.train()
-
-    # trainer.load('save_model_path/vit/baseline_aux/baseline_aux09_tiny.pt')
-    # trainer.eval(0)
 
 """
 
